@@ -17,7 +17,7 @@ apt-get -y update
 
 echo 'install compile tools'
 apt-get -y install build-essential cmake cmake-curses-gui pkg-config git
-apt-get -y install python-dev gfortan
+apt-get -y install python-dev
 pip install virtualenv 
 
 echo 'install opencv'
