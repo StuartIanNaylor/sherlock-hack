@@ -41,6 +41,6 @@ rm -rf temp
 
 echo 'Hopefully now run the examples from the command line'
 
-python /src/object3.py
+python ./src/object3.py
 
 
