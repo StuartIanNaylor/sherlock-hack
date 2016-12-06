@@ -7,22 +7,36 @@ import sys
 import cv2
 import numpy as np
 import socket
+import Tkinter as tk
 
 import sharedmem
 import mpipe
 
 import coils
 import util
+import os
+from pantilthat import *
+
+# Load the BCM V4l2 driver for /dev/video0
+os.system('sudo modprobe bcm2835-v4l2')
+
+
 
 DEVICE   = 0 #int(sys.argv[1])
-WIDTH    = 640 #int(sys.argv[2])
-HEIGHT   = 480 #int(sys.argv[3])
-DURATION = 30.0 #float(sys.argv[4])  # In seconds, or -(port#) if negative.
+WIDTH    = 1024 #int(sys.argv[2])
+HEIGHT   = 768 #int(sys.argv[3])
+DURATION = 120.0 #float(sys.argv[4])  # In seconds, or -(port#) if negative.
+
 
 # Create a process-shared table keyed on timestamps
 # and holding references to allocated image memory.
 images = multiprocessing.Manager().dict()
-
+lastpan = 0
+lasttilt = 0
+camwaittime = datetime.datetime.now()
+avcount = 0
+avx = 0
+avy = 0
 class Detector(mpipe.OrderedWorker):
     """Detects objects."""
     def __init__(self, classifier, color):
@@ -34,26 +48,28 @@ class Detector(mpipe.OrderedWorker):
         result = list()
         try:
             image = images[tstamp]
-            gray = cv2.cvtColor(
+
+            height, width = image.shape[:2]
+            gray = cv2.resize(
             image,
+            (int(width/3), int(height/3))
+            )
+            gray = cv2.cvtColor(
+            gray,
             cv2.COLOR_BGR2GRAY
             )
             gray = cv2.equalizeHist(
             gray
             )
-            height, width = gray.shape[:2]
-            gray = cv2.resize(
-            gray,
-            (int(width/4),
-            int(height/4))
-            )
+
+
             #size = np.shape(image)[:2]
             rects = self._classifier.detectMultiScale(
                 gray,
                 scaleFactor=1.2,
                 minNeighbors=3,
                 minSize=(20,20),
-                flags=cv2.cv.CV_HAAR_DO_CANNY_PRUNING | cv2.cv.CV_HAAR_DO_ROUGH_SEARCH
+                flags=cv2.cv.CV_HAAR_FIND_BIGGEST_OBJECT | cv2.cv.CV_HAAR_DO_CANNY_PRUNING | cv2.cv.CV_HAAR_DO_ROUGH_SEARCH
 
                 )
             if len(rects):
@@ -68,29 +84,96 @@ framerate = coils.RateTicker((2,))
 
 class Postprocessor(mpipe.OrderedWorker):
     def doTask(self, (tstamp, rects,)):
+        first = True
         """Augment the input image with results of processing."""
+        size = np.shape(images[tstamp])[:2]
         # Make a flat list from a list of lists .
         rects = [item for sublist in rects for item in sublist]
 
         # Draw rectangles.
         for x1, y1, x2, y2, color in rects:
+            x1 *= 3
+            y1 *= 3
+            x2 *= 3
+            y2 *= 3
             cv2.rectangle(
                 images[tstamp],
-                (x1*4, y1*4), ((x1+x2)*4, (y1+y2)*4),
+                (x1, y1), (x1+x2, y1+y2),
                 color=color,
                 thickness=2,
                 )
+            if first == True:
+                global lastpan
+                global lasttilt
+                global camwaittime
+                global avcount
+                global avx
+                global avy
+                now = datetime.datetime.now()
+                if camwaittime < now:
 
+                    #Find face center
+                    x = float(x1 + (x2 / 2))
+                    y = float(y1 + (y2 / 2))
+                    first = False
+                    #print(x, y, 'face center', size)
+                    ixc = float((size[1] / 2))
+                    iwc = float((size[0] / 2))
+                    #print(ixc, iwc, 'image center')
+                    offsetx = float(((ixc - x) / ixc))
+                    offsety = float(((y - iwc) / iwc))
+                    #print(offsetx, offsety, 'percent off center')
+                    #print(lastpan, lasttilt)
+                
+                    
+                    aovx = (offsetx * 27.0)
+                    aovy = (offsety * 20.5)
+                    if avcount < 10:
+                        avcount += 1
+                        avx += aovx
+                        avy += aovy
+                    else:
+                        avox = avx / 10
+                        avoy = avy / 10
+                        print(aovx, aovy, 'Angle of view')
+                        if abs(aovx) > abs(aovy):
+                            camwaitsecs = ((abs(aovx) / 90) * 6)
+                        else:
+                            camwaitsecs = ((abs(aovy) / 90) * 6)
+                        print(camwaitsecs, 'Cam wait secs')
+                        camwaittime = now + datetime.timedelta(seconds=abs(camwaitsecs))
+                        nextpan = int(lastpan + aovx)
+                        nexttilt = int(lasttilt + aovy)
+                        #print(nextpan, nexttilt)
+                        pan(nextpan)
+                        tilt(nexttilt)
+                        lastpan = nextpan
+                        lasttilt = nexttilt
+                        avcount = 0
         # Write image dimensions and framerate.
-        size = np.shape(images[tstamp])[:2]
+
         fps_text = '{:.2f} fps'.format(*framerate.tick())
         util.writeOSD(
             images[tstamp],
             ('{0}x{1}'.format(size[1], size[0]), fps_text),
             )
+
         return tstamp
 
+root = tk.Tk()
+screen_width = root.winfo_screenwidth()
+screen_height = root.winfo_screenheight()
+startx = (screen_width/2) - (WIDTH/2)
+starty = (screen_height/2) - (HEIGHT/2)
+#Center window in screen
 cv2.namedWindow('object detection 3')
+cv2.moveWindow('object detection 3', startx, starty)
+#Default start position
+pan(0)
+tilt(-40)
+lastpan = 0
+lasttilt = -40
+
 class Viewer(mpipe.OrderedWorker):
     """Displays image in a window."""
     def doTask(self, tstamp):
@@ -105,7 +188,6 @@ class Viewer(mpipe.OrderedWorker):
 # Create the detector stages.
 detector_stages = list()
 for classi in util.cascade.classifiers:
-    print(classi)
     detector_stages.append(
         mpipe.Stage(
             Detector, 1, 
@@ -152,7 +234,7 @@ pipe_dealloc.put(datetime.timedelta(microseconds=1e6))  # Start it up right away
 cap = cv2.VideoCapture(DEVICE)
 cap.set(3, WIDTH)
 cap.set(4, HEIGHT)
-
+time.sleep(2)
 # Run the video capture loop, allocating shared memory
 # and feeding the image processing pipeline.
 # Run for configured duration, or (if duration < 0) until we
