@@ -2,10 +2,9 @@
 
 import datetime
 import cv2
-import numpy as np
+import numpy as np      
     
-
-def writeOSD(image, lines, size=0.02):
+def writeOSD(image, lines, size=0.0175):
     """Write text given in *lines* iterable, 
     the height of each line determined by *size* as
     proportion of image height."""

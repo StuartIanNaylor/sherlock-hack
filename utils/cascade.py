@@ -76,7 +76,7 @@ for spec in specs:
         # Add to the module containers.
         classifiers.append(cfer)
         colors[cfer] = spec[1]
-        print(spec[1])
+
 
 if not classifiers:
     print('*** Warning: No classifers configured. ***')
